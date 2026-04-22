@@ -130,7 +130,7 @@ class MLPTexture3D(torch.nn.Module):
         if _has_tcnn:
             self.encoder = tcnn.Encoding(3, enc_cfg)
         else:
-            self.encoder = _HashGridEncoding(3, enc_cfg)
+            self.encoder = _HashGridEncoding(3, enc_cfg).cuda()
         self.encoder.register_full_backward_hook(lambda module, grad_i, grad_o: (grad_i[0] / gradient_scaling, ))
 
         # Setup MLP
