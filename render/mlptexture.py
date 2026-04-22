@@ -17,6 +17,32 @@ except ImportError:
     _has_tcnn = False
 
 
+class _CombinedParams:
+    """Proxy that exposes .grad over all embedding weights, for tinycudann .params compat."""
+    def __init__(self, embeddings):
+        self._embeddings = embeddings
+
+    @property
+    def grad(self):
+        return self
+
+    @grad.setter
+    def grad(self, value):
+        pass
+
+    def __itruediv__(self, scalar):
+        for emb in self._embeddings:
+            if emb.weight.grad is not None:
+                emb.weight.grad /= scalar
+        return self
+
+    def __imul__(self, scalar):
+        for emb in self._embeddings:
+            if emb.weight.grad is not None:
+                emb.weight.grad *= scalar
+        return self
+
+
 class _HashGridEncoding(torch.nn.Module):
     """Pure-PyTorch multi-resolution hash grid encoding (fallback when tinycudann is unavailable)."""
     def __init__(self, n_input_dims, cfg):
@@ -39,6 +65,11 @@ class _HashGridEncoding(torch.nn.Module):
 
         primes = torch.tensor([1, 2654435761, 805459861], dtype=torch.int64)
         self.register_buffer("primes", primes)
+
+    @property
+    def params(self):
+        """Compatibility shim for tinycudann's .params attribute."""
+        return _CombinedParams(self.embeddings)
 
     def _hash_coords(self, coords_floor, level):
         hashed = torch.zeros(coords_floor.shape[0], dtype=torch.int64, device=coords_floor.device)
