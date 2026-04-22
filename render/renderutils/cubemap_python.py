@@ -109,32 +109,28 @@ def specular_cubemap_python(cubemap, roughness, cutoff=0.99):
         color_accum = torch.zeros(res_h, res_w, n_channels, device=device)
         weight_accum = torch.zeros(res_h, res_w, 1, device=device)
 
+        up = torch.where(
+            normal[..., 2:3].abs() < 0.999,
+            torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(normal),
+            torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(normal)
+        )
+        tangent = _safe_normalize(torch.cross(up, normal, dim=-1))
+        bitangent = torch.cross(normal, tangent, dim=-1)
+
         for i in range(n_samples):
             xi1 = (i + 0.5) / n_samples
             xi2 = ((i * 0.7548776662) % 1.0)
 
             alpha_sq = alpha * alpha
-            cos_theta = torch.sqrt(torch.tensor((1.0 - xi1) / (1.0 + (alpha_sq - 1.0) * xi1), device=device))
-            sin_theta = torch.sqrt(torch.clamp(1.0 - cos_theta * cos_theta, min=0.0))
-            phi = 2.0 * np.pi * xi2
+            cos_theta_val = float(np.sqrt((1.0 - xi1) / (1.0 + (alpha_sq - 1.0) * xi1)))
+            sin_theta_val = float(np.sqrt(max(0.0, 1.0 - cos_theta_val * cos_theta_val)))
+            phi_val = 2.0 * np.pi * xi2
 
-            h_local = torch.stack([
-                sin_theta * torch.cos(torch.tensor(phi, device=device)),
-                sin_theta * torch.sin(torch.tensor(phi, device=device)),
-                cos_theta
-            ]).expand(3, res_h, res_w)
+            hx = sin_theta_val * np.cos(phi_val)
+            hy = sin_theta_val * np.sin(phi_val)
+            hz = cos_theta_val
 
-            up = torch.where(
-                normal[..., 2:3].abs() < 0.999,
-                torch.tensor([0.0, 0.0, 1.0], device=device),
-                torch.tensor([1.0, 0.0, 0.0], device=device)
-            )
-            tangent = _safe_normalize(torch.cross(up, normal, dim=-1))
-            bitangent = torch.cross(normal, tangent, dim=-1)
-
-            h_world = (tangent * h_local[0:1].permute(1, 2, 0) +
-                       bitangent * h_local[1:2].permute(1, 2, 0) +
-                       normal * h_local[2:3].permute(1, 2, 0))
+            h_world = tangent * hx + bitangent * hy + normal * hz
             h_world = _safe_normalize(h_world)
 
             reflect_dir = 2.0 * (view * h_world).sum(dim=-1, keepdim=True) * h_world - view
