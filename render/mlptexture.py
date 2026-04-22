@@ -8,8 +8,66 @@
 # its affiliates is strictly prohibited.
 
 import torch
-import tinycudann as tcnn
 import numpy as np
+
+try:
+    import tinycudann as tcnn
+    _has_tcnn = True
+except ImportError:
+    _has_tcnn = False
+
+
+class _HashGridEncoding(torch.nn.Module):
+    """Pure-PyTorch multi-resolution hash grid encoding (fallback when tinycudann is unavailable)."""
+    def __init__(self, n_input_dims, cfg):
+        super().__init__()
+        self.n_levels = cfg["n_levels"]
+        self.n_features_per_level = cfg["n_features_per_level"]
+        self.log2_hashmap_size = cfg["log2_hashmap_size"]
+        self.base_resolution = cfg["base_resolution"]
+        self.per_level_scale = cfg["per_level_scale"]
+        self.n_input_dims = n_input_dims
+        self.n_output_dims = self.n_levels * self.n_features_per_level
+        self.hashmap_size = 2 ** self.log2_hashmap_size
+
+        self.embeddings = torch.nn.ModuleList([
+            torch.nn.Embedding(self.hashmap_size, self.n_features_per_level)
+            for _ in range(self.n_levels)
+        ])
+        for emb in self.embeddings:
+            torch.nn.init.uniform_(emb.weight, -1e-4, 1e-4)
+
+        primes = torch.tensor([1, 2654435761, 805459861], dtype=torch.int64)
+        self.register_buffer("primes", primes)
+
+    def _hash_coords(self, coords_floor, level):
+        hashed = torch.zeros(coords_floor.shape[0], dtype=torch.int64, device=coords_floor.device)
+        for d in range(self.n_input_dims):
+            hashed = hashed ^ (coords_floor[:, d].long() * self.primes[d])
+        return hashed % self.hashmap_size
+
+    def forward(self, x):
+        outputs = []
+        for level, emb in enumerate(self.embeddings):
+            resolution = int(self.base_resolution * (self.per_level_scale ** level))
+            scaled = x * resolution
+            floor_coords = scaled.floor().long()
+
+            n_verts = 2 ** self.n_input_dims
+            interp = torch.zeros(x.shape[0], self.n_features_per_level, device=x.device)
+            frac = scaled - floor_coords.float()
+
+            for i in range(n_verts):
+                offset = torch.tensor([(i >> d) & 1 for d in range(self.n_input_dims)],
+                                      device=x.device, dtype=torch.long)
+                corner = floor_coords + offset[None, :]
+                idx = self._hash_coords(corner, level)
+                weight = torch.ones(x.shape[0], device=x.device)
+                for d in range(self.n_input_dims):
+                    weight = weight * (frac[:, d] if offset[d] == 1 else (1.0 - frac[:, d]))
+                interp = interp + weight[:, None] * emb(idx)
+            outputs.append(interp)
+        return torch.cat(outputs, dim=-1)
 
 #######################################################################################################################################################
 # Small MLP using PyTorch primitives, internal helper class
@@ -69,7 +127,10 @@ class MLPTexture3D(torch.nn.Module):
 	    }
 
         gradient_scaling = 128.0
-        self.encoder = tcnn.Encoding(3, enc_cfg)
+        if _has_tcnn:
+            self.encoder = tcnn.Encoding(3, enc_cfg)
+        else:
+            self.encoder = _HashGridEncoding(3, enc_cfg)
         self.encoder.register_full_backward_hook(lambda module, grad_i, grad_o: (grad_i[0] / gradient_scaling, ))
 
         # Setup MLP
@@ -100,5 +161,6 @@ class MLPTexture3D(torch.nn.Module):
         pass
 
     def cleanup(self):
-        tcnn.free_temporary_memory()
+        if _has_tcnn:
+            tcnn.free_temporary_memory()
 
