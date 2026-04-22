@@ -15,6 +15,7 @@ import torch.utils.cpp_extension
 
 from .bsdf import *
 from .loss import *
+from .cubemap_python import diffuse_cubemap_python, specular_cubemap_python
 
 #----------------------------------------------------------------------------
 # C++/Cuda plugin compiler/loader.
@@ -429,7 +430,7 @@ def diffuse_cubemap(cubemap, use_python=None):
     if use_python is None:
         use_python = _use_python_fallback
     if use_python:
-        assert False, "diffuse_cubemap has no Python fallback; set learn_light=False or use fixed envmap on ROCm"
+        out = diffuse_cubemap_python(cubemap)
     else:
         out = _diffuse_cubemap_func.apply(cubemap)
     if torch.is_anomaly_enabled():
@@ -475,7 +476,7 @@ def specular_cubemap(cubemap, roughness, cutoff=0.99, use_python=None):
     assert cubemap.shape[0] == 6 and cubemap.shape[1] == cubemap.shape[2], "Bad shape for cubemap tensor: %s" % str(cubemap.shape)
 
     if use_python:
-        assert False, "specular_cubemap has no Python fallback; set learn_light=False or use fixed envmap on ROCm"
+        out = specular_cubemap_python(cubemap, roughness, cutoff)
     else:
         key = (cubemap.shape[1], roughness, cutoff)
         if key not in __ndfBoundsDict:

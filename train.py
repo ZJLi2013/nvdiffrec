@@ -584,8 +584,7 @@ if __name__ == "__main__":
     # ==============================================================================================
     
     if FLAGS.learn_light and torch.version.hip is not None:
-        print("WARNING: learn_light=True requires cubemap CUDA kernels not yet ported to HIP. Falling back to fixed lighting.")
-        FLAGS.learn_light = False
+        print("NOTE: learn_light=True on ROCm uses Python cubemap fallbacks (slower than CUDA kernels).")
 
     if FLAGS.learn_light:
         lgt = light.create_trainable_env_rnd(512, scale=0.0, bias=0.5)
