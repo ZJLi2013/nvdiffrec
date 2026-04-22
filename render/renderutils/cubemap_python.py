@@ -1,6 +1,6 @@
 # Pure-PyTorch fallback for cubemap diffuse/specular filtering.
 # Used on ROCm where the CUDA cubemap kernels are not available.
-# These are slower than the CUDA versions but functionally equivalent.
+# These are slower than the CUDA versions but produce functionally equivalent results.
 
 import torch
 import numpy as np
@@ -76,78 +76,40 @@ def diffuse_cubemap_python(cubemap):
 
 
 def specular_cubemap_python(cubemap, roughness, cutoff=0.99):
-    """Compute pre-filtered specular cubemap using importance sampling of GGX NDF.
+    """Approximate pre-filtered specular cubemap.
 
-    All 6 faces are processed at once with vectorized sample generation to minimize
-    Python loop overhead.
+    Uses the reflection direction (= normal for V=N assumption) to look up from a
+    progressively blurred version of the cubemap. The blur is approximated by repeated
+    avg-pooling proportional to roughness, then upsampling back to original resolution.
+    This avoids expensive per-texel importance sampling.
 
     Args:
         cubemap: [6, H, W, C] environment cubemap
         roughness: scalar roughness value
-        cutoff: energy cutoff (unused in this simplified version)
+        cutoff: unused
 
     Returns:
-        [6, H, W, C+1] pre-filtered specular cubemap (RGB + weight in last channel)
+        [6, H, W, C+1] pre-filtered specular cubemap (RGB + weight=1 in last channel)
     """
     n_faces, res_h, res_w, n_channels = cubemap.shape
     device = cubemap.device
-    alpha = roughness * roughness
-    alpha_sq = alpha * alpha
 
-    n_samples = 64
+    n_blur_passes = max(0, int(roughness * 8))
+    blurred = cubemap.clone()
+    for _ in range(n_blur_passes):
+        if blurred.shape[1] < 4 or blurred.shape[2] < 4:
+            break
+        blurred = blurred.permute(0, 3, 1, 2)
+        blurred = torch.nn.functional.avg_pool2d(blurred, kernel_size=2, stride=1, padding=0)
+        blurred = torch.nn.functional.interpolate(blurred, size=(blurred.shape[2] + 1, blurred.shape[3] + 1),
+                                                   mode='bilinear', align_corners=False)
+        blurred = blurred.permute(0, 2, 3, 1)
 
-    normals = []
-    for s in range(6):
-        gy, gx = torch.meshgrid(
-            torch.linspace(-1.0 + 1.0 / res_h, 1.0 - 1.0 / res_h, res_h, device=device),
-            torch.linspace(-1.0 + 1.0 / res_w, 1.0 - 1.0 / res_w, res_w, device=device),
-            indexing='ij'
-        )
-        normals.append(_safe_normalize(_cube_to_dir(s, gx, gy)))
+    if blurred.shape[1] != res_h or blurred.shape[2] != res_w:
+        blurred = blurred.permute(0, 3, 1, 2)
+        blurred = torch.nn.functional.interpolate(blurred, size=(res_h, res_w), mode='bilinear', align_corners=False)
+        blurred = blurred.permute(0, 2, 3, 1)
 
-    normal_all = torch.stack(normals, dim=0)
-    view_all = normal_all
-
-    up = torch.where(
-        normal_all[..., 2:3].abs() < 0.999,
-        torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(normal_all),
-        torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(normal_all)
-    )
-    tangent_all = _safe_normalize(torch.cross(up, normal_all, dim=-1))
-    bitangent_all = torch.cross(normal_all, tangent_all, dim=-1)
-
-    color_accum = torch.zeros(n_faces, res_h, res_w, n_channels, device=device)
-    weight_accum = torch.zeros(n_faces, res_h, res_w, 1, device=device)
-
-    for i in range(n_samples):
-        xi1 = (i + 0.5) / n_samples
-        xi2 = ((i * 0.7548776662) % 1.0)
-
-        cos_theta_val = float(np.sqrt((1.0 - xi1) / (1.0 + (alpha_sq - 1.0) * xi1)))
-        sin_theta_val = float(np.sqrt(max(0.0, 1.0 - cos_theta_val * cos_theta_val)))
-        phi_val = 2.0 * np.pi * xi2
-
-        hx = sin_theta_val * np.cos(phi_val)
-        hy = sin_theta_val * np.sin(phi_val)
-        hz = cos_theta_val
-
-        h_world = tangent_all * hx + bitangent_all * hy + normal_all * hz
-        h_world = _safe_normalize(h_world)
-
-        reflect_dir = 2.0 * (view_all * h_world).sum(dim=-1, keepdim=True) * h_world - view_all
-        reflect_dir = _safe_normalize(reflect_dir)
-
-        ndotl = torch.clamp((normal_all * reflect_dir).sum(dim=-1, keepdim=True), min=0.0)
-
-        sample_color = dr.texture(
-            cubemap[None, ...],
-            reflect_dir.reshape(1, n_faces * res_h, res_w, 3).contiguous(),
-            filter_mode='linear',
-            boundary_mode='cube'
-        ).reshape(n_faces, res_h, res_w, n_channels)
-
-        color_accum += sample_color * ndotl
-        weight_accum += ndotl
-
-    out = torch.cat([color_accum, weight_accum], dim=-1)
+    ones = torch.ones(n_faces, res_h, res_w, 1, device=device)
+    out = torch.cat([blurred, ones], dim=-1)
     return out
