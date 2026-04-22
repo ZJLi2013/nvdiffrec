@@ -33,7 +33,6 @@ def diffuse_cubemap_python(cubemap):
     n_faces, res_h, res_w, n_channels = cubemap.shape
     assert n_faces == 6
 
-    n_samples = 64
     device = cubemap.device
     out = torch.zeros_like(cubemap)
 
@@ -79,8 +78,8 @@ def diffuse_cubemap_python(cubemap):
 def specular_cubemap_python(cubemap, roughness, cutoff=0.99):
     """Compute pre-filtered specular cubemap using importance sampling of GGX NDF.
 
-    For the smoke test this uses a simplified approach: sample the cubemap with
-    `nvdiffrast.torch.texture` at increasingly blurred mip levels based on roughness.
+    All 6 faces are processed at once with vectorized sample generation to minimize
+    Python loop overhead.
 
     Args:
         cubemap: [6, H, W, C] environment cubemap
@@ -93,62 +92,62 @@ def specular_cubemap_python(cubemap, roughness, cutoff=0.99):
     n_faces, res_h, res_w, n_channels = cubemap.shape
     device = cubemap.device
     alpha = roughness * roughness
+    alpha_sq = alpha * alpha
 
-    n_samples = 128
-    out = torch.zeros(n_faces, res_h, res_w, n_channels + 1, device=device)
+    n_samples = 64
 
+    normals = []
     for s in range(6):
         gy, gx = torch.meshgrid(
             torch.linspace(-1.0 + 1.0 / res_h, 1.0 - 1.0 / res_h, res_h, device=device),
             torch.linspace(-1.0 + 1.0 / res_w, 1.0 - 1.0 / res_w, res_w, device=device),
             indexing='ij'
         )
-        normal = _safe_normalize(_cube_to_dir(s, gx, gy))
-        view = normal
+        normals.append(_safe_normalize(_cube_to_dir(s, gx, gy)))
 
-        color_accum = torch.zeros(res_h, res_w, n_channels, device=device)
-        weight_accum = torch.zeros(res_h, res_w, 1, device=device)
+    normal_all = torch.stack(normals, dim=0)
+    view_all = normal_all
 
-        up = torch.where(
-            normal[..., 2:3].abs() < 0.999,
-            torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(normal),
-            torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(normal)
-        )
-        tangent = _safe_normalize(torch.cross(up, normal, dim=-1))
-        bitangent = torch.cross(normal, tangent, dim=-1)
+    up = torch.where(
+        normal_all[..., 2:3].abs() < 0.999,
+        torch.tensor([0.0, 0.0, 1.0], device=device).expand_as(normal_all),
+        torch.tensor([1.0, 0.0, 0.0], device=device).expand_as(normal_all)
+    )
+    tangent_all = _safe_normalize(torch.cross(up, normal_all, dim=-1))
+    bitangent_all = torch.cross(normal_all, tangent_all, dim=-1)
 
-        for i in range(n_samples):
-            xi1 = (i + 0.5) / n_samples
-            xi2 = ((i * 0.7548776662) % 1.0)
+    color_accum = torch.zeros(n_faces, res_h, res_w, n_channels, device=device)
+    weight_accum = torch.zeros(n_faces, res_h, res_w, 1, device=device)
 
-            alpha_sq = alpha * alpha
-            cos_theta_val = float(np.sqrt((1.0 - xi1) / (1.0 + (alpha_sq - 1.0) * xi1)))
-            sin_theta_val = float(np.sqrt(max(0.0, 1.0 - cos_theta_val * cos_theta_val)))
-            phi_val = 2.0 * np.pi * xi2
+    for i in range(n_samples):
+        xi1 = (i + 0.5) / n_samples
+        xi2 = ((i * 0.7548776662) % 1.0)
 
-            hx = sin_theta_val * np.cos(phi_val)
-            hy = sin_theta_val * np.sin(phi_val)
-            hz = cos_theta_val
+        cos_theta_val = float(np.sqrt((1.0 - xi1) / (1.0 + (alpha_sq - 1.0) * xi1)))
+        sin_theta_val = float(np.sqrt(max(0.0, 1.0 - cos_theta_val * cos_theta_val)))
+        phi_val = 2.0 * np.pi * xi2
 
-            h_world = tangent * hx + bitangent * hy + normal * hz
-            h_world = _safe_normalize(h_world)
+        hx = sin_theta_val * np.cos(phi_val)
+        hy = sin_theta_val * np.sin(phi_val)
+        hz = cos_theta_val
 
-            reflect_dir = 2.0 * (view * h_world).sum(dim=-1, keepdim=True) * h_world - view
-            reflect_dir = _safe_normalize(reflect_dir)
+        h_world = tangent_all * hx + bitangent_all * hy + normal_all * hz
+        h_world = _safe_normalize(h_world)
 
-            ndotl = torch.clamp((normal * reflect_dir).sum(dim=-1, keepdim=True), min=0.0)
+        reflect_dir = 2.0 * (view_all * h_world).sum(dim=-1, keepdim=True) * h_world - view_all
+        reflect_dir = _safe_normalize(reflect_dir)
 
-            sample_color = dr.texture(
-                cubemap[None, ...],
-                reflect_dir[None, ...].contiguous(),
-                filter_mode='linear',
-                boundary_mode='cube'
-            )[0]
+        ndotl = torch.clamp((normal_all * reflect_dir).sum(dim=-1, keepdim=True), min=0.0)
 
-            color_accum += sample_color * ndotl
-            weight_accum += ndotl
+        sample_color = dr.texture(
+            cubemap[None, ...],
+            reflect_dir.reshape(1, n_faces * res_h, res_w, 3).contiguous(),
+            filter_mode='linear',
+            boundary_mode='cube'
+        ).reshape(n_faces, res_h, res_w, n_channels)
 
-        out[s, ..., :n_channels] = color_accum
-        out[s, ..., n_channels:] = weight_accum
+        color_accum += sample_color * ndotl
+        weight_accum += ndotl
 
+    out = torch.cat([color_accum, weight_accum], dim=-1)
     return out
