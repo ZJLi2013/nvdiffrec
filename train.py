@@ -559,7 +559,10 @@ if __name__ == "__main__":
 
     os.makedirs(FLAGS.out_dir, exist_ok=True)
 
-    glctx = dr.RasterizeGLContext()
+    if torch.version.hip is not None:
+        glctx = dr.RasterizeCudaContext()
+    else:
+        glctx = dr.RasterizeGLContext()
 
     # ==============================================================================================
     #  Create data pipeline
@@ -580,6 +583,10 @@ if __name__ == "__main__":
     #  Create env light with trainable parameters
     # ==============================================================================================
     
+    if FLAGS.learn_light and torch.version.hip is not None:
+        print("WARNING: learn_light=True requires cubemap CUDA kernels not yet ported to HIP. Falling back to fixed lighting.")
+        FLAGS.learn_light = False
+
     if FLAGS.learn_light:
         lgt = light.create_trainable_env_rnd(512, scale=0.0, bias=0.5)
     else:

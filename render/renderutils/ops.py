@@ -20,11 +20,16 @@ from .loss import *
 # C++/Cuda plugin compiler/loader.
 
 _cached_plugin = None
+_use_python_fallback = os.environ.get('NVDIFFREC_USE_PYTHON', '') == '1' or torch.version.hip is not None
+
 def _get_plugin():
     # Return cached plugin if already loaded.
     global _cached_plugin
     if _cached_plugin is not None:
         return _cached_plugin
+
+    if _use_python_fallback:
+        return None
 
     # Make sure we can find the necessary compiler and libary binaries.
     if os.name == 'nt':
@@ -98,7 +103,9 @@ class _fresnel_shlick_func(torch.autograd.Function):
         f0, f90, cosTheta = ctx.saved_variables
         return _get_plugin().fresnel_shlick_bwd(f0, f90, cosTheta, dout) + (None,)
 
-def _fresnel_shlick(f0, f90, cosTheta, use_python=False):
+def _fresnel_shlick(f0, f90, cosTheta, use_python=None):
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_fresnel_shlick(f0, f90, cosTheta)
     else:
@@ -121,7 +128,9 @@ class _ndf_ggx_func(torch.autograd.Function):
         alphaSqr, cosTheta = ctx.saved_variables
         return _get_plugin().ndf_ggx_bwd(alphaSqr, cosTheta, dout) + (None,)
 
-def _ndf_ggx(alphaSqr, cosTheta, use_python=False):
+def _ndf_ggx(alphaSqr, cosTheta, use_python=None):
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_ndf_ggx(alphaSqr, cosTheta)
     else:
@@ -143,7 +152,9 @@ class _lambda_ggx_func(torch.autograd.Function):
         alphaSqr, cosTheta = ctx.saved_variables
         return _get_plugin().lambda_ggx_bwd(alphaSqr, cosTheta, dout) + (None,)
 
-def _lambda_ggx(alphaSqr, cosTheta, use_python=False):
+def _lambda_ggx(alphaSqr, cosTheta, use_python=None):
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_lambda_ggx(alphaSqr, cosTheta)
     else:
@@ -165,7 +176,9 @@ class _masking_smith_func(torch.autograd.Function):
         alphaSqr, cosThetaI, cosThetaO = ctx.saved_variables
         return _get_plugin().masking_smith_bwd(alphaSqr, cosThetaI, cosThetaO, dout) + (None,)
 
-def _masking_smith(alphaSqr, cosThetaI, cosThetaO, use_python=False):
+def _masking_smith(alphaSqr, cosThetaI, cosThetaO, use_python=None):
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_masking_smith_ggx_correlated(alphaSqr, cosThetaI, cosThetaO)
     else:
@@ -191,7 +204,7 @@ class _prepare_shading_normal_func(torch.autograd.Function):
         pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm = ctx.saved_variables
         return _get_plugin().prepare_shading_normal_bwd(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, dout, ctx.two_sided_shading, ctx.opengl) + (None, None, None)
 
-def prepare_shading_normal(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading=True, opengl=True, use_python=False):
+def prepare_shading_normal(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading=True, opengl=True, use_python=None):
     '''Takes care of all corner cases and produces a final normal used for shading:
         - Constructs tangent space
         - Flips normal direction based on geometric normal for two sided Shading
@@ -213,6 +226,9 @@ def prepare_shading_normal(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng,
     Returns:
         Final shading normal
     '''    
+
+    if use_python is None:
+        use_python = _use_python_fallback
 
     if perturbed_nrm is None:
         perturbed_nrm = torch.tensor([0, 0, 1], dtype=torch.float32, device='cuda', requires_grad=False)[None, None, None, ...]
@@ -241,7 +257,7 @@ class _lambert_func(torch.autograd.Function):
         nrm, wi = ctx.saved_variables
         return _get_plugin().lambert_bwd(nrm, wi, dout) + (None,)
 
-def lambert(nrm, wi, use_python=False):
+def lambert(nrm, wi, use_python=None):
     '''Lambertian bsdf. 
     All tensors assume a shape of [minibatch_size, height, width, 3] or broadcastable equivalent.
 
@@ -254,6 +270,8 @@ def lambert(nrm, wi, use_python=False):
         Shaded diffuse value with shape [minibatch_size, height, width, 1]
     '''
 
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_lambert(nrm, wi)
     else:
@@ -275,7 +293,7 @@ class _frostbite_diffuse_func(torch.autograd.Function):
         nrm, wi, wo, linearRoughness = ctx.saved_variables
         return _get_plugin().frostbite_bwd(nrm, wi, wo, linearRoughness, dout) + (None,)
 
-def frostbite_diffuse(nrm, wi, wo, linearRoughness, use_python=False):
+def frostbite_diffuse(nrm, wi, wo, linearRoughness, use_python=None):
     '''Frostbite, normalized Disney Diffuse bsdf. 
     All tensors assume a shape of [minibatch_size, height, width, 3] or broadcastable equivalent.
 
@@ -290,6 +308,8 @@ def frostbite_diffuse(nrm, wi, wo, linearRoughness, use_python=False):
         Shaded diffuse value with shape [minibatch_size, height, width, 1]
     '''
 
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_frostbite(nrm, wi, wo, linearRoughness)
     else:
@@ -312,7 +332,7 @@ class _pbr_specular_func(torch.autograd.Function):
         col, nrm, wo, wi, alpha = ctx.saved_variables
         return _get_plugin().pbr_specular_bwd(col, nrm, wo, wi, alpha, ctx.min_roughness, dout) + (None, None)
 
-def pbr_specular(col, nrm, wo, wi, alpha, min_roughness=0.08, use_python=False):
+def pbr_specular(col, nrm, wo, wi, alpha, min_roughness=0.08, use_python=None):
     '''Physically-based specular bsdf.
     All tensors assume a shape of [minibatch_size, height, width, 3] or broadcastable equivalent unless otherwise noted.
 
@@ -329,6 +349,8 @@ def pbr_specular(col, nrm, wo, wi, alpha, min_roughness=0.08, use_python=False):
         Shaded specular color
     '''
 
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_pbr_specular(col, nrm, wo, wi, alpha, min_roughness=min_roughness)
     else:
@@ -352,7 +374,7 @@ class _pbr_bsdf_func(torch.autograd.Function):
         kd, arm, pos, nrm, view_pos, light_pos = ctx.saved_variables
         return _get_plugin().pbr_bsdf_bwd(kd, arm, pos, nrm, view_pos, light_pos, ctx.min_roughness, ctx.BSDF, dout) + (None, None, None)
 
-def pbr_bsdf(kd, arm, pos, nrm, view_pos, light_pos, min_roughness=0.08, bsdf="lambert", use_python=False):
+def pbr_bsdf(kd, arm, pos, nrm, view_pos, light_pos, min_roughness=0.08, bsdf="lambert", use_python=None):
     '''Physically-based bsdf, both diffuse & specular lobes
     All tensors assume a shape of [minibatch_size, height, width, 3] or broadcastable equivalent unless otherwise noted.
 
@@ -376,6 +398,8 @@ def pbr_bsdf(kd, arm, pos, nrm, view_pos, light_pos, min_roughness=0.08, bsdf="l
     if bsdf == 'frostbite':
         BSDF = 1
 
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = bsdf_pbr(kd, arm, pos, nrm, view_pos, light_pos, min_roughness, BSDF)
     else:
@@ -401,9 +425,11 @@ class _diffuse_cubemap_func(torch.autograd.Function):
         cubemap_grad = _get_plugin().diffuse_cubemap_bwd(cubemap, dout)
         return cubemap_grad, None
 
-def diffuse_cubemap(cubemap, use_python=False):
+def diffuse_cubemap(cubemap, use_python=None):
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
-        assert False
+        assert False, "diffuse_cubemap has no Python fallback; set learn_light=False or use fixed envmap on ROCm"
     else:
         out = _diffuse_cubemap_func.apply(cubemap)
     if torch.is_anomaly_enabled():
@@ -443,11 +469,13 @@ def __ndfBounds(res, roughness, cutoff):
     return costheta[idx], bounds
 __ndfBoundsDict = {}
 
-def specular_cubemap(cubemap, roughness, cutoff=0.99, use_python=False):
+def specular_cubemap(cubemap, roughness, cutoff=0.99, use_python=None):
+    if use_python is None:
+        use_python = _use_python_fallback
     assert cubemap.shape[0] == 6 and cubemap.shape[1] == cubemap.shape[2], "Bad shape for cubemap tensor: %s" % str(cubemap.shape)
 
     if use_python:
-        assert False
+        assert False, "specular_cubemap has no Python fallback; set learn_light=False or use fixed envmap on ROCm"
     else:
         key = (cubemap.shape[1], roughness, cutoff)
         if key not in __ndfBoundsDict:
@@ -473,7 +501,7 @@ class _image_loss_func(torch.autograd.Function):
         img, target = ctx.saved_variables
         return _get_plugin().image_loss_bwd(img, target, dout, ctx.loss, ctx.tonemapper) + (None, None, None)
 
-def image_loss(img, target, loss='l1', tonemapper='none', use_python=False):
+def image_loss(img, target, loss='l1', tonemapper='none', use_python=None):
     '''Compute HDR image loss. Combines tonemapping and loss into a single kernel for better perf.
     All tensors assume a shape of [minibatch_size, height, width, 3] or broadcastable equivalent unless otherwise noted.
 
@@ -487,6 +515,8 @@ def image_loss(img, target, loss='l1', tonemapper='none', use_python=False):
     Returns:
         Image space loss (scalar value).
     '''
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = image_loss_fn(img, target, loss, tonemapper)
     else:
@@ -512,7 +542,7 @@ class _xfm_func(torch.autograd.Function):
         points, matrix = ctx.saved_variables
         return (_get_plugin().xfm_bwd(points, matrix, dout, ctx.isPoints),) + (None, None, None)
 
-def xfm_points(points, matrix, use_python=False):
+def xfm_points(points, matrix, use_python=None):
     '''Transform points.
     Args:
         points: Tensor containing 3D points with shape [minibatch_size, num_vertices, 3] or [1, num_vertices, 3]
@@ -521,6 +551,8 @@ def xfm_points(points, matrix, use_python=False):
     Returns:
         Transformed points in homogeneous 4D with shape [minibatch_size, num_vertices, 4].
     '''    
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = torch.matmul(torch.nn.functional.pad(points, pad=(0,1), mode='constant', value=1.0), torch.transpose(matrix, 1, 2))
     else:
@@ -530,7 +562,7 @@ def xfm_points(points, matrix, use_python=False):
         assert torch.all(torch.isfinite(out)), "Output of xfm_points contains inf or NaN"
     return out
 
-def xfm_vectors(vectors, matrix, use_python=False):
+def xfm_vectors(vectors, matrix, use_python=None):
     '''Transform vectors.
     Args:
         vectors: Tensor containing 3D vectors with shape [minibatch_size, num_vertices, 3] or [1, num_vertices, 3]
@@ -541,6 +573,8 @@ def xfm_vectors(vectors, matrix, use_python=False):
         Transformed vectors in homogeneous 4D with shape [minibatch_size, num_vertices, 4].
     '''    
 
+    if use_python is None:
+        use_python = _use_python_fallback
     if use_python:
         out = torch.matmul(torch.nn.functional.pad(vectors, pad=(0,1), mode='constant', value=0.0), torch.transpose(matrix, 1, 2))[..., 0:3].contiguous()
     else:
