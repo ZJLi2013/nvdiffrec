@@ -1,5 +1,15 @@
 # nvdiffrec
 
+> **Disclaimer**: This repository is a personal fork of [NVlabs/nvdiffrec](https://github.com/NVlabs/nvdiffrec)
+> with modifications for AMD ROCm GPU compatibility.
+> It is intended **solely for non-commercial academic research and personal study purposes**.
+> The original code is licensed under the
+> [NVIDIA Source Code License (NSCL)](https://github.com/NVlabs/nvdiffrec/blob/main/LICENSE.txt),
+> which **prohibits commercial use** without separate authorization from NVIDIA.
+> All intellectual property rights remain with NVIDIA Corporation and its affiliates.
+> If you wish to use nvdiffrec for commercial purposes, please contact
+> [NVIDIA Research Licensing](https://www.nvidia.com/en-us/research/inquiries/).
+
 ![Teaser image](https://nvlabs.github.io/nvdiffrec/assets/system.JPG "Teaser image")
 
 Joint optimization of topology, materials and lighting from multi-view image observations 
