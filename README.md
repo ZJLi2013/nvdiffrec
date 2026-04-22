@@ -8,6 +8,49 @@ as described in the paper
 
 For differentiable marching tetrahedons, we have adapted code from NVIDIA's [Kaolin: A Pytorch Library for Accelerating 3D Deep Learning Research](https://github.com/NVIDIAGameWorks/kaolin).
 
+# ROCm Support (AMD GPU)
+
+This fork (`rocm` branch) adds support for running nvdiffrec on AMD GPUs with ROCm.
+
+**Tested on**: MI300X (gfx942), ROCm 7.1.1, PyTorch 2.9.1
+
+### Quick Start (ROCm)
+
+```bash
+# Start a ROCm PyTorch container
+docker run -d --name nvdiffrec-rocm \
+  --device=/dev/kfd --device=/dev/dri --group-add video \
+  --cap-add=SYS_PTRACE --shm-size=16g \
+  -v /data:/data -w /data \
+  rocm/pytorch:rocm7.1.1_ubuntu24.04_py3.12_pytorch_release_2.9.1 sleep infinity
+
+# Inside the container
+docker exec -it nvdiffrec-rocm bash
+git clone -b rocm https://github.com/ZJLi2013/nvdiffrec.git && cd nvdiffrec
+pip install imageio trimesh tqdm matplotlib ninja xatlas numpy opencv-python-headless
+pip install --no-build-isolation git+https://github.com/ZJLi2013/nvdiffrast.git@rocm
+
+# Run training
+PYTHONUNBUFFERED=1 python train.py --config configs/bob.json
+```
+
+### What Changed for ROCm
+
+| Component | Strategy |
+|-----------|----------|
+| `nvdiffrast` | ROCm fork ([ZJLi2013/nvdiffrast@rocm](https://github.com/ZJLi2013/nvdiffrast/tree/rocm)), uses `RasterizeCudaContext` instead of OpenGL |
+| `renderutils` CUDA kernels | Auto-detected Python fallbacks via `torch.version.hip` |
+| `tiny-cuda-nn` (hash grid) | Pure PyTorch `_HashGridEncoding` fallback (or install [tiny-rocm-nn](https://github.com/ZJLi2013/tiny-rocm-nn) for native perf) |
+| Cubemap filtering | Pure PyTorch `cubemap_python.py` fallback |
+
+### Known Limitations
+
+- `tiny-rocm-nn` requires ROCm 6.x due to `hipblasDatatype_t` API change in ROCm 7.x; the PyTorch hash grid fallback is used instead
+- Cubemap pre-filtering uses approximate box-blur (slightly less accurate specular reflections)
+- All `renderutils` operations use Python fallbacks (functional but slower than CUDA kernels)
+
+See [docs/rocm_migration.md](docs/rocm_migration.md) for the full migration analysis and experiment results.
+
 # News
 
 - **2023-10-20** : We added a version of the renderutils library written in [slangpy](https://shader-slang.com/slang/user-guide/a1-02-slangpy.html) to leverage the autodiff capabilities of slang instead of CUDA extensions with manually crafted forward and backward passes. This simplifies the code substantially, with the same runtime performance as before. This version is available in the `slang` [branch](https://github.com/NVlabs/nvdiffrec/tree/slang) of this repo.
